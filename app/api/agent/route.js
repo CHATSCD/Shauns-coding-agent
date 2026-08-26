@@ -1,0 +1,100 @@
+import { NextResponse } from 'next/server';
+import OpenAI from 'openai';
+import { pushFileToGitHub } from '@/lib/github';
+import { runSql } from '@/lib/supabase';
+
+const deepseek = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: 'https://api.deepseek.com', // critical for DeepSeek
+});
+
+// Tool definitions
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "push_file_to_github",
+      description: "Write a file to the GitHub repository (create or update).",
+      parameters: {
+        type: "object",
+        properties: {
+          file_path: { type: "string" },
+          content: { type: "string" },
+          commit_message: { type: "string" },
+        },
+        required: ["file_path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_sql_on_supabase",
+      description: "Execute SQL commands on the Supabase database (e.g., CREATE TABLE).",
+      parameters: {
+        type: "object",
+        properties: {
+          sql: { type: "string" },
+        },
+        required: ["sql"],
+      },
+    },
+  },
+];
+
+export async function POST(req) {
+  const { message } = await req.json();
+
+  const messages = [{ role: "user", content: message }];
+
+  // Agent loop (max 10 iterations to prevent infinite loops)
+  for (let i = 0; i < 10; i++) {
+    const response = await deepseek.chat.completions.create({
+      model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
+
+    const assistant = response.choices[0].message;
+
+    // If no tool calls, return final answer
+    if (!assistant.tool_calls) {
+      return NextResponse.json({ reply: assistant.content });
+    }
+
+    // Add assistant message with tool calls to conversation
+    messages.push({
+      role: "assistant",
+      content: assistant.content,
+      tool_calls: assistant.tool_calls,
+    });
+
+    // Execute each tool call
+    for (const toolCall of assistant.tool_calls) {
+      const { name, arguments: argsJson } = toolCall.function;
+      const args = JSON.parse(argsJson);
+      let result;
+
+      switch (name) {
+        case "push_file_to_github":
+          result = await pushFileToGitHub(args.file_path, args.content, args.commit_message);
+          break;
+        case "run_sql_on_supabase":
+          result = await runSql(args.sql);
+          break;
+        default:
+          result = "Unknown tool";
+      }
+
+      // Add tool result back to conversation
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: result,
+      });
+    }
+  }
+
+  return NextResponse.json({ reply: "Maximum iterations reached." });
+}
