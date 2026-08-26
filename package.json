@@ -14,5 +14,10 @@
     "openai": "^4.52.7",
     "@supabase/supabase-js": "^2.45.0",
     "octokit": "^4.0.2"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.10",
+    "postcss": "^8.4.41",
+    "autoprefixer": "^10.4.20"
   }
 }
