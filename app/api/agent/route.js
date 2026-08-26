@@ -138,6 +138,12 @@ export async function POST(req) {
   const deepseek = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
     baseURL: 'https://api.deepseek.com', // critical for DeepSeek
+    // The SDK's own default timeout is 600s — longer than Vercel's 300s
+    // function limit — so a stalled DeepSeek response would otherwise never
+    // time out on our side and would just silently ride out the platform's
+    // hard kill with no error at all. Fail well before that instead.
+    timeout: 45_000,
+    maxRetries: 1,
   });
 
   try {
@@ -145,12 +151,14 @@ export async function POST(req) {
     // returned as a plan for the user to approve/reject rather than being
     // executed immediately. Execution only happens once the client sends
     // decision: "approve" for that exact plan.
+    console.log(`[agent] calling DeepSeek (turn ${turns + 1})...`);
     const response = await deepseek.chat.completions.create({
-      model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
+      model: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
       messages,
       tools,
       tool_choice: "auto",
     });
+    console.log(`[agent] DeepSeek responded (turn ${turns + 1})`);
 
     const assistant = response.choices[0].message;
     turns += 1;
@@ -173,6 +181,7 @@ export async function POST(req) {
       plan: assistant.tool_calls.map(describeToolCall),
     });
   } catch (err) {
+    console.error(`[agent] DeepSeek call failed (turn ${turns + 1}):`, err.message);
     return NextResponse.json(
       { error: `Agent request failed: ${err.message}` },
       { status: 500 }
