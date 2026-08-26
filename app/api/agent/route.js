@@ -3,11 +3,6 @@ import OpenAI from 'openai';
 import { pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
 
-const deepseek = new OpenAI({
-  apiKey: process.env.DEEPSEEK_API_KEY,
-  baseURL: 'https://api.deepseek.com', // critical for DeepSeek
-});
-
 // Tool definitions
 const tools = [
   {
@@ -43,6 +38,11 @@ const tools = [
 ];
 
 export async function POST(req) {
+  const deepseek = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: 'https://api.deepseek.com', // critical for DeepSeek
+  });
+
   const { message } = await req.json();
 
   const messages = [{ role: "user", content: message }];
