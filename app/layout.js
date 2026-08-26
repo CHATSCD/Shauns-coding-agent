@@ -1,3 +1,5 @@
+import './globals.css';
+
 export const metadata = {
   title: 'AI Coding Agent',
   description: 'AI Coding Agent interface',

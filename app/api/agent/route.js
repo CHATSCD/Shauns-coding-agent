@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
+import { triggerVercelDeploy } from '@/lib/vercel';
 
 // Tool definitions
 const tools = [
@@ -35,66 +36,101 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "trigger_vercel_deploy",
+      description: "Trigger a Vercel deployment for the current project via its deploy hook.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
 ];
 
 export async function POST(req) {
+  if (!process.env.DEEPSEEK_API_KEY) {
+    return NextResponse.json(
+      { error: "DEEPSEEK_API_KEY is not configured on the server." },
+      { status: 500 }
+    );
+  }
+
+  const { message } = await req.json();
+  if (!message || typeof message !== "string") {
+    return NextResponse.json(
+      { error: "Request body must include a non-empty 'message' string." },
+      { status: 400 }
+    );
+  }
+
   const deepseek = new OpenAI({
     apiKey: process.env.DEEPSEEK_API_KEY,
     baseURL: 'https://api.deepseek.com', // critical for DeepSeek
   });
 
-  const { message } = await req.json();
-
   const messages = [{ role: "user", content: message }];
 
-  // Agent loop (max 10 iterations to prevent infinite loops)
-  for (let i = 0; i < 10; i++) {
-    const response = await deepseek.chat.completions.create({
-      model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
-      messages,
-      tools,
-      tool_choice: "auto",
-    });
+  try {
+    // Agent loop (max 10 iterations to prevent infinite loops)
+    for (let i = 0; i < 10; i++) {
+      const response = await deepseek.chat.completions.create({
+        model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
+        messages,
+        tools,
+        tool_choice: "auto",
+      });
 
-    const assistant = response.choices[0].message;
+      const assistant = response.choices[0].message;
 
-    // If no tool calls, return final answer
-    if (!assistant.tool_calls) {
-      return NextResponse.json({ reply: assistant.content });
-    }
-
-    // Add assistant message with tool calls to conversation
-    messages.push({
-      role: "assistant",
-      content: assistant.content,
-      tool_calls: assistant.tool_calls,
-    });
-
-    // Execute each tool call
-    for (const toolCall of assistant.tool_calls) {
-      const { name, arguments: argsJson } = toolCall.function;
-      const args = JSON.parse(argsJson);
-      let result;
-
-      switch (name) {
-        case "push_file_to_github":
-          result = await pushFileToGitHub(args.file_path, args.content, args.commit_message);
-          break;
-        case "run_sql_on_supabase":
-          result = await runSql(args.sql);
-          break;
-        default:
-          result = "Unknown tool";
+      // If no tool calls, return final answer
+      if (!assistant.tool_calls) {
+        return NextResponse.json({ reply: assistant.content });
       }
 
-      // Add tool result back to conversation
+      // Add assistant message with tool calls to conversation
       messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: result,
+        role: "assistant",
+        content: assistant.content,
+        tool_calls: assistant.tool_calls,
       });
-    }
-  }
 
-  return NextResponse.json({ reply: "Maximum iterations reached." });
+      // Execute each tool call
+      for (const toolCall of assistant.tool_calls) {
+        const { name, arguments: argsJson } = toolCall.function;
+        let result;
+
+        try {
+          const args = JSON.parse(argsJson);
+          switch (name) {
+            case "push_file_to_github":
+              result = await pushFileToGitHub(args.file_path, args.content, args.commit_message);
+              break;
+            case "run_sql_on_supabase":
+              result = await runSql(args.sql);
+              break;
+            case "trigger_vercel_deploy":
+              result = await triggerVercelDeploy();
+              break;
+            default:
+              result = `Unknown tool: ${name}`;
+          }
+        } catch (err) {
+          result = `❌ Error running tool ${name}: ${err.message}`;
+        }
+
+        // Add tool result back to conversation
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: result,
+        });
+      }
+    }
+
+    return NextResponse.json({ reply: "Maximum iterations reached." });
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Agent request failed: ${err.message}` },
+      { status: 500 }
+    );
+  }
 }
