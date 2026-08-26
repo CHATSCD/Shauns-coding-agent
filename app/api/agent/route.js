@@ -47,9 +47,9 @@ const tools = [
 ];
 
 export async function POST(req) {
-  if (!process.env.GEMINI_API_KEY) {
+  if (!process.env.DEEPSEEK_API_KEY) {
     return NextResponse.json(
-      { error: "GEMINI_API_KEY is not configured on the server." },
+      { error: "DEEPSEEK_API_KEY is not configured on the server." },
       { status: 500 }
     );
   }
@@ -62,9 +62,9 @@ export async function POST(req) {
     );
   }
 
-  const gemini = new OpenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/', // Gemini's OpenAI-compatible endpoint
+  const deepseek = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: 'https://api.deepseek.com', // critical for DeepSeek
   });
 
   const messages = [{ role: "user", content: message }];
@@ -72,8 +72,8 @@ export async function POST(req) {
   try {
     // Agent loop (max 10 iterations to prevent infinite loops)
     for (let i = 0; i < 10; i++) {
-      const response = await gemini.chat.completions.create({
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      const response = await deepseek.chat.completions.create({
+        model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
         messages,
         tools,
         tool_choice: "auto",
