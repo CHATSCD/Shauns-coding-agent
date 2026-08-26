@@ -76,6 +76,11 @@ export default function Home() {
       >
         {loading ? 'Running...' : 'Run'}
       </button>
+      {loading && (
+        <p className="text-sm text-gray-500 mt-2">
+          Waiting on the model — this can take up to about a minute.
+        </p>
+      )}
 
       {plan && (
         <div className="mt-4 border border-amber-300 bg-amber-50 rounded p-4">
