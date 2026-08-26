@@ -4,6 +4,8 @@ import { pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
 import { triggerVercelDeploy } from '@/lib/vercel';
 
+const MAX_TURNS = 20;
+
 // Tool definitions
 const tools = [
   {
@@ -46,6 +48,35 @@ const tools = [
   },
 ];
 
+async function executeToolCall(toolCall) {
+  const { name, arguments: argsJson } = toolCall.function;
+  try {
+    const args = JSON.parse(argsJson);
+    switch (name) {
+      case "push_file_to_github":
+        return await pushFileToGitHub(args.file_path, args.content, args.commit_message);
+      case "run_sql_on_supabase":
+        return await runSql(args.sql);
+      case "trigger_vercel_deploy":
+        return await triggerVercelDeploy();
+      default:
+        return `Unknown tool: ${name}`;
+    }
+  } catch (err) {
+    return `❌ Error running tool ${name}: ${err.message}`;
+  }
+}
+
+function describeToolCall(toolCall) {
+  let args = {};
+  try {
+    args = JSON.parse(toolCall.function.arguments);
+  } catch {
+    // leave args empty if the model produced malformed JSON
+  }
+  return { name: toolCall.function.name, args };
+}
+
 export async function POST(req) {
   if (!process.env.DEEPSEEK_API_KEY) {
     return NextResponse.json(
@@ -54,12 +85,54 @@ export async function POST(req) {
     );
   }
 
-  const { message } = await req.json();
-  if (!message || typeof message !== "string") {
+  const body = await req.json();
+  const { message, decision } = body;
+  let messages = Array.isArray(body.messages) ? body.messages : [];
+  let turns = Number.isInteger(body.turns) ? body.turns : 0;
+
+  if (message !== undefined) {
+    if (typeof message !== "string" || !message.trim()) {
+      return NextResponse.json(
+        { error: "Request body must include a non-empty 'message' string." },
+        { status: 400 }
+      );
+    }
+    messages = [...messages, { role: "user", content: message }];
+  } else if (decision === "approve" || decision === "reject") {
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage || lastMessage.role !== "assistant" || !lastMessage.tool_calls?.length) {
+      return NextResponse.json(
+        { error: "There is no pending plan to respond to." },
+        { status: 400 }
+      );
+    }
+
+    if (decision === "approve") {
+      for (const toolCall of lastMessage.tool_calls) {
+        const result = await executeToolCall(toolCall);
+        messages = [...messages, { role: "tool", tool_call_id: toolCall.id, content: result }];
+      }
+    } else {
+      for (const toolCall of lastMessage.tool_calls) {
+        messages = [
+          ...messages,
+          {
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: "❌ The user did not approve this action. It was not performed.",
+          },
+        ];
+      }
+    }
+  } else {
     return NextResponse.json(
-      { error: "Request body must include a non-empty 'message' string." },
+      { error: "Request body must include either 'message' or 'decision'." },
       { status: 400 }
     );
+  }
+
+  if (turns >= MAX_TURNS) {
+    return NextResponse.json({ status: "final", reply: "Maximum turns reached.", messages });
   }
 
   const deepseek = new OpenAI({
@@ -67,66 +140,38 @@ export async function POST(req) {
     baseURL: 'https://api.deepseek.com', // critical for DeepSeek
   });
 
-  const messages = [{ role: "user", content: message }];
-
   try {
-    // Agent loop (max 10 iterations to prevent infinite loops)
-    for (let i = 0; i < 10; i++) {
-      const response = await deepseek.chat.completions.create({
-        model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
-        messages,
-        tools,
-        tool_choice: "auto",
-      });
+    // One model call per request: if it proposes tool calls, they are
+    // returned as a plan for the user to approve/reject rather than being
+    // executed immediately. Execution only happens once the client sends
+    // decision: "approve" for that exact plan.
+    const response = await deepseek.chat.completions.create({
+      model: "deepseek-v4-pro",       // or "deepseek-v4-flash"
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
 
-      const assistant = response.choices[0].message;
+    const assistant = response.choices[0].message;
+    turns += 1;
 
-      // If no tool calls, return final answer
-      if (!assistant.tool_calls) {
-        return NextResponse.json({ reply: assistant.content });
-      }
-
-      // Add assistant message with tool calls to conversation
-      messages.push({
-        role: "assistant",
-        content: assistant.content,
-        tool_calls: assistant.tool_calls,
-      });
-
-      // Execute each tool call
-      for (const toolCall of assistant.tool_calls) {
-        const { name, arguments: argsJson } = toolCall.function;
-        let result;
-
-        try {
-          const args = JSON.parse(argsJson);
-          switch (name) {
-            case "push_file_to_github":
-              result = await pushFileToGitHub(args.file_path, args.content, args.commit_message);
-              break;
-            case "run_sql_on_supabase":
-              result = await runSql(args.sql);
-              break;
-            case "trigger_vercel_deploy":
-              result = await triggerVercelDeploy();
-              break;
-            default:
-              result = `Unknown tool: ${name}`;
-          }
-        } catch (err) {
-          result = `❌ Error running tool ${name}: ${err.message}`;
-        }
-
-        // Add tool result back to conversation
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: result,
-        });
-      }
+    if (!assistant.tool_calls?.length) {
+      messages = [...messages, { role: "assistant", content: assistant.content }];
+      return NextResponse.json({ status: "final", reply: assistant.content, messages });
     }
 
-    return NextResponse.json({ reply: "Maximum iterations reached." });
+    messages = [
+      ...messages,
+      { role: "assistant", content: assistant.content, tool_calls: assistant.tool_calls },
+    ];
+
+    return NextResponse.json({
+      status: "plan",
+      messages,
+      turns,
+      note: assistant.content || null,
+      plan: assistant.tool_calls.map(describeToolCall),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: `Agent request failed: ${err.message}` },
