@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
+import { triggerVercelDeploy } from '@/lib/vercel';
 
 // Tool definitions
 const tools = [
@@ -33,6 +34,14 @@ const tools = [
         },
         required: ["sql"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "trigger_vercel_deploy",
+      description: "Trigger a Vercel deployment for the current project via its deploy hook.",
+      parameters: { type: "object", properties: {} },
     },
   },
 ];
@@ -97,6 +106,9 @@ export async function POST(req) {
               break;
             case "run_sql_on_supabase":
               result = await runSql(args.sql);
+              break;
+            case "trigger_vercel_deploy":
+              result = await triggerVercelDeploy();
               break;
             default:
               result = `Unknown tool: ${name}`;
