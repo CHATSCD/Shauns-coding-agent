@@ -163,15 +163,17 @@ export async function POST(req) {
     const assistant = response.choices[0].message;
     turns += 1;
 
+    // Preserve the whole message as DeepSeek returned it (not just content +
+    // tool_calls) — "thinking mode" responses include a reasoning_content
+    // field that the API requires to be echoed back on the next call, and
+    // dropping it here breaks the follow-up request once a plan is approved
+    // or rejected.
     if (!assistant.tool_calls?.length) {
-      messages = [...messages, { role: "assistant", content: assistant.content }];
+      messages = [...messages, assistant];
       return NextResponse.json({ status: "final", reply: assistant.content, messages });
     }
 
-    messages = [
-      ...messages,
-      { role: "assistant", content: assistant.content, tool_calls: assistant.tool_calls },
-    ];
+    messages = [...messages, assistant];
 
     return NextResponse.json({
       status: "plan",
