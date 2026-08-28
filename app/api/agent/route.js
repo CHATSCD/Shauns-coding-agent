@@ -28,7 +28,7 @@ const tools = [
     type: "function",
     function: {
       name: "push_file_to_github",
-      description: "Write a file to a GitHub repository (create or update). Defaults to the configured repository; pass repo (and optionally owner) to target a different one, such as one just created with create_github_repo.",
+      description: "Write a file to a GitHub repository (create or update). Without repo/owner, this defaults to the repository this very agent app lives in — only rely on that default when the user is asking you to modify this app itself. If the user asks you to build a different/new project, call create_github_repo first and pass its repo (and owner) here so you don't overwrite this app's own files.",
       parameters: {
         type: "object",
         properties: {
@@ -94,6 +94,19 @@ function describeToolCall(toolCall) {
   } catch {
     // leave args empty if the model produced malformed JSON
   }
+
+  // push_file_to_github silently falls back to the configured default repo
+  // when the model doesn't pass repo/owner — resolve that here so the
+  // approval screen always shows the real destination instead of hiding it
+  // behind an omitted argument.
+  if (toolCall.function.name === "push_file_to_github") {
+    args = {
+      ...args,
+      owner: args.owner || process.env.GITHUB_REPO_OWNER || "(not configured)",
+      repo: args.repo || process.env.GITHUB_REPO_NAME || "(not configured)",
+    };
+  }
+
   return { name: toolCall.function.name, args };
 }
 
