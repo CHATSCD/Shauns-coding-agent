@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { pushFileToGitHub } from '@/lib/github';
+import { createGithubRepo, pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
 import { triggerVercelDeploy } from '@/lib/vercel';
 
@@ -11,14 +11,32 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "create_github_repo",
+      description: "Create a new GitHub repository under the configured GitHub account/org. Use this before pushing files when starting a brand-new project.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          description: { type: "string" },
+          private: { type: "boolean" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "push_file_to_github",
-      description: "Write a file to the GitHub repository (create or update).",
+      description: "Write a file to a GitHub repository (create or update). Defaults to the configured repository; pass repo (and optionally owner) to target a different one, such as one just created with create_github_repo.",
       parameters: {
         type: "object",
         properties: {
           file_path: { type: "string" },
           content: { type: "string" },
           commit_message: { type: "string" },
+          repo: { type: "string" },
+          owner: { type: "string" },
         },
         required: ["file_path", "content"],
       },
@@ -53,8 +71,10 @@ async function executeToolCall(toolCall) {
   try {
     const args = JSON.parse(argsJson);
     switch (name) {
+      case "create_github_repo":
+        return await createGithubRepo(args.name, { description: args.description, private: args.private });
       case "push_file_to_github":
-        return await pushFileToGitHub(args.file_path, args.content, args.commit_message);
+        return await pushFileToGitHub(args.file_path, args.content, args.commit_message, args.repo, args.owner);
       case "run_sql_on_supabase":
         return await runSql(args.sql);
       case "trigger_vercel_deploy":
