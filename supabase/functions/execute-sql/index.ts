@@ -13,10 +13,24 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get("Authorization") ?? "";
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!serviceRoleKey || authHeader !== `Bearer ${serviceRoleKey}`) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+      const received = authHeader.replace(/^Bearer\s*/, "");
+      // TEMPORARY diagnostic: never reveals either full secret, only enough
+      // (length + last few characters) to tell whether the caller's key
+      // matches this project's expected one. Remove once the mismatch is
+      // resolved.
+      return new Response(
+        JSON.stringify({
+          error: "Unauthorized",
+          debug: {
+            receivedTokenLength: received.length,
+            receivedTokenSuffix: received.slice(-6),
+            expectedTokenPresent: !!serviceRoleKey,
+            expectedTokenLength: serviceRoleKey ? serviceRoleKey.length : 0,
+            expectedTokenSuffix: serviceRoleKey ? serviceRoleKey.slice(-6) : null,
+          },
+        }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     const { sql } = await req.json();
