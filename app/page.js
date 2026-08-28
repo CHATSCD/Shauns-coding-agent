@@ -72,18 +72,26 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState('');
   const [error, setError] = useState('');
-  const [conversation, setConversation] = useState(null); // { messages, turns }
+  // chatMessages is the actual conversation sent to the model on every
+  // request — this is what gives the agent memory of what was said before.
+  // The History panel below is a separate, human-readable log; it never
+  // fed back into the model, which is why the agent had no memory even
+  // though the log showed past turns.
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatTurns, setChatTurns] = useState(0);
   const [plan, setPlan] = useState(null); // { items, note }
   const [history, setHistory] = useState([]);
   const loadedRef = useRef(false);
 
   // Restore any saved session on first mount, so a hung/failed request or a
-  // page reload doesn't lose the conversation history or a pending plan.
+  // page reload doesn't lose the conversation memory, history log, or a
+  // pending plan.
   useEffect(() => {
     const saved = loadStoredState();
     if (saved) {
       setHistory(saved.history || []);
-      setConversation(saved.conversation || null);
+      setChatMessages(saved.chatMessages || []);
+      setChatTurns(saved.chatTurns || 0);
       setPlan(saved.plan || null);
     }
     loadedRef.current = true;
@@ -92,8 +100,8 @@ export default function Home() {
   // Persist on every change, once the initial load above has run.
   useEffect(() => {
     if (!loadedRef.current) return;
-    saveStoredState({ history, conversation, plan });
-  }, [history, conversation, plan]);
+    saveStoredState({ history, chatMessages, chatTurns, plan });
+  }, [history, chatMessages, chatTurns, plan]);
 
   const logEvent = (entry) => {
     setHistory((prev) => [...prev, { ...entry, ts: Date.now() }].slice(-MAX_HISTORY));
@@ -117,19 +125,22 @@ export default function Home() {
         setError(message);
         logEvent({ type: 'error', text: message });
         setPlan(null);
-        setConversation(null);
+        // Leave chatMessages/chatTurns as they were — a failed request
+        // shouldn't erase the conversation the model already knows about.
         return;
       }
 
       if (data.status === 'plan') {
-        setConversation({ messages: data.messages, turns: data.turns });
+        setChatMessages(data.messages);
+        setChatTurns(data.turns);
         setPlan({ items: data.plan, note: data.note });
         logEvent({ type: 'plan', items: data.plan, note: data.note });
       } else {
         const reply = data.reply ?? '(no reply)';
+        setChatMessages(data.messages);
+        setChatTurns(0);
         setResponse(reply);
         setPlan(null);
-        setConversation(null);
         logEvent({ type: 'reply', text: reply });
       }
     } catch (err) {
@@ -137,7 +148,6 @@ export default function Home() {
       setError(message);
       logEvent({ type: 'error', text: message });
       setPlan(null);
-      setConversation(null);
     } finally {
       setLoading(false);
     }
@@ -148,21 +158,23 @@ export default function Home() {
     setResponse('');
     setError('');
     setPlan(null);
-    setConversation(null);
     logEvent({ type: 'user', text: prompt });
-    callAgent({ message: prompt });
+    // Send the conversation so far along with the new message, so the
+    // model has memory of everything discussed in this session.
+    callAgent({ messages: chatMessages, message: prompt });
     setPrompt('');
   };
 
   const respondToPlan = (decision) => {
-    if (!conversation || loading) return;
+    if (!plan || loading) return;
     logEvent({ type: 'decision', decision });
-    callAgent({ messages: conversation.messages, turns: conversation.turns, decision });
+    callAgent({ messages: chatMessages, turns: chatTurns, decision });
   };
 
   const clearHistory = () => {
     setHistory([]);
-    setConversation(null);
+    setChatMessages([]);
+    setChatTurns(0);
     setPlan(null);
     setResponse('');
     setError('');
@@ -182,7 +194,7 @@ export default function Home() {
             onClick={clearHistory}
             className="text-sm text-gray-500 hover:text-red-600 transition-colors"
           >
-            Clear history
+            Start new conversation
           </button>
         )}
       </div>
