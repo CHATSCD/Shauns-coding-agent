@@ -204,8 +204,14 @@ export async function POST(req) {
     });
   } catch (err) {
     console.error(`[agent] DeepSeek call failed (turn ${turns + 1}):`, err.message);
+    // messages may already include a real tool result from an approved
+    // action above (the file push / SQL run / deploy trigger already
+    // happened) even though this later model call failed — return it so
+    // the client doesn't lose that record or end up with a conversation
+    // that has an assistant tool_calls message with no matching tool
+    // result, which would break every subsequent request.
     return NextResponse.json(
-      { error: `Agent request failed: ${err.message}` },
+      { error: `Agent request failed: ${err.message}`, messages },
       { status: 500 }
     );
   }

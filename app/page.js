@@ -38,6 +38,7 @@ function HistoryEntry({ entry }) {
         <span className="text-gray-400">{time}</span>{' '}
         <span className="font-semibold text-amber-700">Proposed:</span>{' '}
         {entry.items.map((item) => item.name).join(', ')}
+        {entry.note && <div className="text-gray-600 mt-0.5">{entry.note}</div>}
       </div>
     );
   }
@@ -82,6 +83,11 @@ export default function Home() {
   const [plan, setPlan] = useState(null); // { items, note }
   const [history, setHistory] = useState([]);
   const loadedRef = useRef(false);
+  // setLoading(true) doesn't block a second click until React re-renders,
+  // so a fast double-click could fire two overlapping requests (and
+  // potentially double-execute an approved action). Check this ref
+  // synchronously instead of relying on the loading state's render timing.
+  const inFlightRef = useRef(false);
 
   // Restore any saved session on first mount, so a hung/failed request or a
   // page reload doesn't lose the conversation memory, history log, or a
@@ -108,6 +114,8 @@ export default function Home() {
   };
 
   const callAgent = async (body) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
     setError('');
 
@@ -125,8 +133,15 @@ export default function Home() {
         setError(message);
         logEvent({ type: 'error', text: message });
         setPlan(null);
-        // Leave chatMessages/chatTurns as they were — a failed request
-        // shouldn't erase the conversation the model already knows about.
+        // If an action had already been approved and executed before this
+        // failure (e.g. the follow-up model call timed out), the server
+        // returns the updated messages including that real tool result —
+        // use it so the record isn't lost and the conversation doesn't end
+        // up with an unresolved tool_calls message that would break every
+        // later request. Otherwise leave chatMessages as they were.
+        if (Array.isArray(data?.messages)) {
+          setChatMessages(data.messages);
+        }
         return;
       }
 
@@ -149,12 +164,13 @@ export default function Home() {
       logEvent({ type: 'error', text: message });
       setPlan(null);
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   };
 
   const runAgent = () => {
-    if (!prompt.trim() || loading) return;
+    if (!prompt.trim() || inFlightRef.current) return;
     setResponse('');
     setError('');
     setPlan(null);
@@ -166,7 +182,7 @@ export default function Home() {
   };
 
   const respondToPlan = (decision) => {
-    if (!plan || loading) return;
+    if (!plan || inFlightRef.current) return;
     logEvent({ type: 'decision', decision });
     callAgent({ messages: chatMessages, turns: chatTurns, decision });
   };
