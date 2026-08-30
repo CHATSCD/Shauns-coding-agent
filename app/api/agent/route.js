@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { createGithubRepo, pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
 import { triggerVercelDeploy } from '@/lib/vercel';
+import { appendMessages, clearConversation, loadMessages } from '@/lib/db';
 
 const MAX_TURNS = 20;
 
@@ -110,6 +111,49 @@ function describeToolCall(toolCall) {
   return { name: toolCall.function.name, args };
 }
 
+// A pending plan is an assistant message with unresolved tool_calls sitting
+// at the end of the conversation — used both to answer GET (so a reload
+// shows the same plan instead of losing it) and after POST.
+function pendingPlanFrom(messages) {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant" || !last.tool_calls?.length) return null;
+  return { items: last.tool_calls.map(describeToolCall), note: last.content || null };
+}
+
+// The safety cap on the model/tool ping-pong within one user request no
+// longer travels through the client — recompute it from how many assistant
+// turns have happened since the last user message in the stored history.
+function turnsSinceLastUser(messages) {
+  let turns = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") break;
+    if (messages[i].role === "assistant") turns++;
+  }
+  return turns;
+}
+
+function stripForApi(messages) {
+  return messages.map(({ created_at, ...m }) => m);
+}
+
+export async function GET() {
+  try {
+    const messages = await loadMessages();
+    return NextResponse.json({ messages, plan: pendingPlanFrom(messages) });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    await clearConversation();
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
 export async function POST(req) {
   if (!process.env.DEEPSEEK_API_KEY) {
     return NextResponse.json(
@@ -120,8 +164,15 @@ export async function POST(req) {
 
   const body = await req.json();
   const { message, decision } = body;
-  let messages = Array.isArray(body.messages) ? body.messages : [];
-  let turns = Number.isInteger(body.turns) ? body.turns : 0;
+
+  let messages;
+  try {
+    messages = await loadMessages();
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+
+  const newRows = [];
 
   if (message !== undefined) {
     if (typeof message !== "string" || !message.trim()) {
@@ -130,7 +181,9 @@ export async function POST(req) {
         { status: 400 }
       );
     }
-    messages = [...messages, { role: "user", content: message }];
+    const userMessage = { role: "user", content: message };
+    messages = [...messages, userMessage];
+    newRows.push(userMessage);
   } else if (decision === "approve" || decision === "reject") {
     const lastMessage = messages[messages.length - 1];
     if (!lastMessage || lastMessage.role !== "assistant" || !lastMessage.tool_calls?.length) {
@@ -143,18 +196,19 @@ export async function POST(req) {
     if (decision === "approve") {
       for (const toolCall of lastMessage.tool_calls) {
         const result = await executeToolCall(toolCall);
-        messages = [...messages, { role: "tool", tool_call_id: toolCall.id, content: result }];
+        const toolMessage = { role: "tool", tool_call_id: toolCall.id, content: result };
+        messages = [...messages, toolMessage];
+        newRows.push(toolMessage);
       }
     } else {
       for (const toolCall of lastMessage.tool_calls) {
-        messages = [
-          ...messages,
-          {
-            role: "tool",
-            tool_call_id: toolCall.id,
-            content: "❌ The user did not approve this action. It was not performed.",
-          },
-        ];
+        const toolMessage = {
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: "❌ The user did not approve this action. It was not performed.",
+        };
+        messages = [...messages, toolMessage];
+        newRows.push(toolMessage);
       }
     }
   } else {
@@ -164,6 +218,15 @@ export async function POST(req) {
     );
   }
 
+  // Persist immediately — if an approved tool already ran (a real side
+  // effect), that must survive even if everything after this point fails.
+  try {
+    await appendMessages(newRows);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+
+  const turns = turnsSinceLastUser(messages);
   if (turns >= MAX_TURNS) {
     return NextResponse.json({ status: "final", reply: "Maximum turns reached.", messages });
   }
@@ -187,42 +250,37 @@ export async function POST(req) {
     console.log(`[agent] calling DeepSeek (turn ${turns + 1})...`);
     const response = await deepseek.chat.completions.create({
       model: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-      messages,
+      messages: stripForApi(messages),
       tools,
       tool_choice: "auto",
     });
     console.log(`[agent] DeepSeek responded (turn ${turns + 1})`);
 
     const assistant = response.choices[0].message;
-    turns += 1;
 
     // Preserve the whole message as DeepSeek returned it (not just content +
     // tool_calls) — "thinking mode" responses include a reasoning_content
     // field that the API requires to be echoed back on the next call, and
     // dropping it here breaks the follow-up request once a plan is approved
     // or rejected.
+    messages = [...messages, assistant];
+    await appendMessages([assistant]);
+
     if (!assistant.tool_calls?.length) {
-      messages = [...messages, assistant];
       return NextResponse.json({ status: "final", reply: assistant.content, messages });
     }
-
-    messages = [...messages, assistant];
 
     return NextResponse.json({
       status: "plan",
       messages,
-      turns,
       note: assistant.content || null,
       plan: assistant.tool_calls.map(describeToolCall),
     });
   } catch (err) {
     console.error(`[agent] DeepSeek call failed (turn ${turns + 1}):`, err.message);
-    // messages may already include a real tool result from an approved
-    // action above (the file push / SQL run / deploy trigger already
-    // happened) even though this later model call failed — return it so
-    // the client doesn't lose that record or end up with a conversation
-    // that has an assistant tool_calls message with no matching tool
-    // result, which would break every subsequent request.
+    // messages already includes anything persisted above (a real tool
+    // result from an approved action, if any) — return it so the client
+    // has the up-to-date record even though this later call failed.
     return NextResponse.json(
       { error: `Agent request failed: ${err.message}`, messages },
       { status: 500 }

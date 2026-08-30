@@ -1,69 +1,55 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
 
-const STORAGE_KEY = 'ai-agent-session-v1';
-const MAX_HISTORY = 200;
-
-function loadStoredState() {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+function describeToolCalls(toolCalls) {
+  return toolCalls
+    .map((tc) => {
+      try {
+        return `${tc.function.name}(${tc.function.arguments})`;
+      } catch {
+        return tc.function?.name || 'tool call';
+      }
+    })
+    .join(', ');
 }
 
-function saveStoredState(state) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // localStorage unavailable (private browsing, quota, etc.) — history just won't persist
-  }
-}
+function HistoryEntry({ message }) {
+  const time = message.created_at ? new Date(message.created_at).toLocaleTimeString() : '';
 
-function HistoryEntry({ entry }) {
-  const time = new Date(entry.ts).toLocaleTimeString();
-
-  if (entry.type === 'user') {
+  if (message.role === 'user') {
     return (
       <div className="text-sm">
         <span className="text-gray-400">{time}</span>{' '}
-        <span className="font-semibold">You:</span> {entry.text}
+        <span className="font-semibold">You:</span> {message.content}
       </div>
     );
   }
-  if (entry.type === 'plan') {
+
+  if (message.role === 'assistant' && message.tool_calls?.length) {
     return (
       <div className="text-sm">
         <span className="text-gray-400">{time}</span>{' '}
         <span className="font-semibold text-amber-700">Proposed:</span>{' '}
-        {entry.items.map((item) => item.name).join(', ')}
-        {entry.note && <div className="text-gray-600 mt-0.5">{entry.note}</div>}
+        {describeToolCalls(message.tool_calls)}
+        {message.content && <div className="text-gray-600 mt-0.5">{message.content}</div>}
       </div>
     );
   }
-  if (entry.type === 'decision') {
+
+  if (message.role === 'tool') {
     return (
       <div className="text-sm">
         <span className="text-gray-400">{time}</span>{' '}
-        <span className={entry.decision === 'approve' ? 'text-green-700 font-semibold' : 'text-red-700 font-semibold'}>
-          {entry.decision === 'approve' ? 'Approved' : 'Rejected'}
-        </span>
+        <span className="font-semibold text-gray-700">Result:</span> {message.content}
       </div>
     );
   }
-  if (entry.type === 'error') {
-    return (
-      <div className="text-sm">
-        <span className="text-gray-400">{time}</span>{' '}
-        <span className="font-semibold text-red-600">Error:</span> {entry.text}
-      </div>
-    );
-  }
+
+  // assistant with a plain reply
   return (
     <div className="text-sm">
       <span className="text-gray-400">{time}</span>{' '}
-      <span className="font-semibold text-blue-700">Agent:</span> {entry.text}
+      <span className="font-semibold text-blue-700">Agent:</span> {message.content}
     </div>
   );
 }
@@ -71,47 +57,39 @@ function HistoryEntry({ entry }) {
 export default function Home() {
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const [response, setResponse] = useState('');
   const [error, setError] = useState('');
-  // chatMessages is the actual conversation sent to the model on every
-  // request — this is what gives the agent memory of what was said before.
-  // The History panel below is a separate, human-readable log; it never
-  // fed back into the model, which is why the agent had no memory even
-  // though the log showed past turns.
+  // chatMessages mirrors the messages table in Supabase — the conversation
+  // lives in the database now, not the browser, so it survives a reload,
+  // a different device, or clearing site data.
   const [chatMessages, setChatMessages] = useState([]);
-  const [chatTurns, setChatTurns] = useState(0);
   const [plan, setPlan] = useState(null); // { items, note }
-  const [history, setHistory] = useState([]);
-  const loadedRef = useRef(false);
   // setLoading(true) doesn't block a second click until React re-renders,
   // so a fast double-click could fire two overlapping requests (and
   // potentially double-execute an approved action). Check this ref
   // synchronously instead of relying on the loading state's render timing.
   const inFlightRef = useRef(false);
 
-  // Restore any saved session on first mount, so a hung/failed request or a
-  // page reload doesn't lose the conversation memory, history log, or a
-  // pending plan.
+  // Load the conversation from the database on mount.
   useEffect(() => {
-    const saved = loadStoredState();
-    if (saved) {
-      setHistory(saved.history || []);
-      setChatMessages(saved.chatMessages || []);
-      setChatTurns(saved.chatTurns || 0);
-      setPlan(saved.plan || null);
-    }
-    loadedRef.current = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/agent');
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          setError(data?.error || `Failed to load conversation (status ${res.status}).`);
+        } else {
+          setChatMessages(data.messages || []);
+          setPlan(data.plan || null);
+        }
+      } catch (err) {
+        setError(`Network error loading conversation: ${err.message}`);
+      } finally {
+        setLoadingHistory(false);
+      }
+    })();
   }, []);
-
-  // Persist on every change, once the initial load above has run.
-  useEffect(() => {
-    if (!loadedRef.current) return;
-    saveStoredState({ history, chatMessages, chatTurns, plan });
-  }, [history, chatMessages, chatTurns, plan]);
-
-  const logEvent = (entry) => {
-    setHistory((prev) => [...prev, { ...entry, ts: Date.now() }].slice(-MAX_HISTORY));
-  };
 
   const callAgent = async (body) => {
     if (inFlightRef.current) return;
@@ -131,37 +109,27 @@ export default function Home() {
       if (!res.ok) {
         const message = data?.error || `Request failed with status ${res.status}.`;
         setError(message);
-        logEvent({ type: 'error', text: message });
         setPlan(null);
         // If an action had already been approved and executed before this
         // failure (e.g. the follow-up model call timed out), the server
         // returns the updated messages including that real tool result —
-        // use it so the record isn't lost and the conversation doesn't end
-        // up with an unresolved tool_calls message that would break every
-        // later request. Otherwise leave chatMessages as they were.
+        // use it so the record isn't lost. Otherwise leave chatMessages as
+        // they were.
         if (Array.isArray(data?.messages)) {
           setChatMessages(data.messages);
         }
         return;
       }
 
+      setChatMessages(data.messages);
       if (data.status === 'plan') {
-        setChatMessages(data.messages);
-        setChatTurns(data.turns);
         setPlan({ items: data.plan, note: data.note });
-        logEvent({ type: 'plan', items: data.plan, note: data.note });
       } else {
-        const reply = data.reply ?? '(no reply)';
-        setChatMessages(data.messages);
-        setChatTurns(0);
-        setResponse(reply);
+        setResponse(data.reply ?? '(no reply)');
         setPlan(null);
-        logEvent({ type: 'reply', text: reply });
       }
     } catch (err) {
-      const message = `Network error: ${err.message}`;
-      setError(message);
-      logEvent({ type: 'error', text: message });
+      setError(`Network error: ${err.message}`);
       setPlan(null);
     } finally {
       inFlightRef.current = false;
@@ -174,30 +142,29 @@ export default function Home() {
     setResponse('');
     setError('');
     setPlan(null);
-    logEvent({ type: 'user', text: prompt });
-    // Send the conversation so far along with the new message, so the
-    // model has memory of everything discussed in this session.
-    callAgent({ messages: chatMessages, message: prompt });
+    callAgent({ message: prompt });
     setPrompt('');
   };
 
   const respondToPlan = (decision) => {
     if (!plan || inFlightRef.current) return;
-    logEvent({ type: 'decision', decision });
-    callAgent({ messages: chatMessages, turns: chatTurns, decision });
+    callAgent({ decision });
   };
 
-  const clearHistory = () => {
-    setHistory([]);
-    setChatMessages([]);
-    setChatTurns(0);
-    setPlan(null);
-    setResponse('');
+  const startNewConversation = async () => {
     setError('');
     try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
+      const res = await fetch('/api/agent', { method: 'DELETE' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(data?.error || `Failed to clear conversation (status ${res.status}).`);
+        return;
+      }
+      setChatMessages([]);
+      setPlan(null);
+      setResponse('');
+    } catch (err) {
+      setError(`Network error: ${err.message}`);
     }
   };
 
@@ -205,9 +172,9 @@ export default function Home() {
     <main className="max-w-2xl mx-auto p-8">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">AI Coding Agent</h1>
-        {history.length > 0 && (
+        {chatMessages.length > 0 && (
           <button
-            onClick={clearHistory}
+            onClick={startNewConversation}
             className="text-sm text-gray-500 hover:text-red-600 transition-colors"
           >
             Start new conversation
@@ -220,11 +187,11 @@ export default function Home() {
         onChange={(e) => setPrompt(e.target.value)}
         className="w-full h-32 border rounded p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
         placeholder="e.g., Create a /api/hello endpoint in Next.js and push it to GitHub."
-        disabled={!!plan}
+        disabled={!!plan || loadingHistory}
       />
       <button
         onClick={runAgent}
-        disabled={loading || !prompt.trim() || !!plan}
+        disabled={loading || loadingHistory || !prompt.trim() || !!plan}
         className="bg-blue-500 disabled:bg-blue-300 text-white px-4 py-2 mt-4 rounded hover:bg-blue-600 transition-colors"
       >
         {loading ? 'Running...' : 'Run'}
@@ -281,12 +248,12 @@ export default function Home() {
         </pre>
       )}
 
-      {history.length > 0 && (
+      {chatMessages.length > 0 && (
         <section className="mt-8">
           <h2 className="font-semibold mb-2 text-sm text-gray-500 uppercase tracking-wide">History</h2>
           <div className="space-y-2 max-h-96 overflow-y-auto border rounded p-3 bg-white">
-            {history.map((entry, i) => (
-              <HistoryEntry key={i} entry={entry} />
+            {chatMessages.map((message, i) => (
+              <HistoryEntry key={i} message={message} />
             ))}
           </div>
         </section>
