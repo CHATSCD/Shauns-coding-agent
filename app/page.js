@@ -172,15 +172,20 @@ export default function Home() {
             {parseError && <p className="text-sm text-red-600 mt-2">{parseError}</p>}
           </div>
 
-          {leads.length > 0 && (
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="font-semibold text-sm">{leads.length} lead{leads.length > 1 ? 's' : ''} loaded</h2>
-                <label className="flex items-center gap-2 text-sm text-gray-600">
-                  <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-                  Dry run (write to out/, don&apos;t deploy)
-                </label>
-              </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold text-sm">
+                {leads.length > 0
+                  ? `${leads.length} lead${leads.length > 1 ? 's' : ''} loaded`
+                  : 'No leads loaded yet'}
+              </h2>
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+                Dry run (write to out/, don&apos;t deploy)
+              </label>
+            </div>
+
+            {leads.length > 0 ? (
               <div className="overflow-x-auto border rounded">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
@@ -242,15 +247,25 @@ export default function Home() {
                   </tbody>
                 </table>
               </div>
+            ) : (
+              <p className="text-sm text-gray-400 border rounded p-3">
+                Paste or upload leads above, then hit Parse. Build &amp; Deploy stays here so you always know where Go is.
+              </p>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 onClick={runBuild}
-                disabled={building}
-                className="mt-4 bg-green-600 disabled:bg-green-300 hover:bg-green-700 text-white text-sm px-4 py-2 rounded"
+                disabled={building || !leads.length}
+                className="bg-green-600 disabled:bg-green-300 hover:bg-green-700 text-white text-sm px-4 py-2 rounded"
               >
                 {building ? 'Building…' : dryRun ? 'Build (dry run)' : 'Build & Deploy'}
               </button>
+              {!leads.length && (
+                <span className="text-xs text-gray-400">Parse at least one lead to enable this.</span>
+              )}
             </div>
-          )}
+          </div>
         </section>
       )}
 
