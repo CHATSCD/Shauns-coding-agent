@@ -3,6 +3,16 @@ import OpenAI from 'openai';
 import { createGithubRepo, pushFileToGitHub } from '@/lib/github';
 import { runSql } from '@/lib/supabase';
 import { triggerVercelDeploy } from '@/lib/vercel';
+import { buildOne } from '@/lib/buildSite';
+
+const SYSTEM_PROMPT = `You are the OneJob Site Factory agent powered by DeepSeek.
+Your job is to chat with Shaun about local trade leads, then deploy tap-to-call one-pagers on Vercel team shauns using the locked EM Thomas Preview template.
+
+When the user gives (or you can gather) a business name, phone, industry/trade, city, and state, call deploy_onejob_site. Prefer that tool over create_github_repo / push_file_to_github for one-pagers.
+Supported industries: electrical, locksmith, plumbing, hvac, handyman.
+Keep copy personal: name the business, correct city+state, specific trade pain.
+After a successful deploy, reply with the live URL and a short paste-ready first-text pitch.
+Do not invent phone numbers. Ask for any missing required field before deploying.`;
 
 const MAX_TURNS = 20;
 
@@ -59,6 +69,28 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "deploy_onejob_site",
+      description: "Build and deploy one OneJob tap-to-call trade one-pager on Vercel team shauns from lead fields. Uses the locked Preview master template + industry kit + hero library. Prefer this for trade lead sites instead of creating a GitHub repo.",
+      parameters: {
+        type: "object",
+        properties: {
+          businessName: { type: "string", description: "Business name, e.g. Colony Plumbing" },
+          phone: { type: "string", description: "Call-tracking / business phone" },
+          industry: { type: "string", description: "electrical | locksmith | plumbing | hvac | handyman (or free text that matches a kit)" },
+          city: { type: "string" },
+          state: { type: "string", description: "Two-letter state, e.g. AL" },
+          notes: { type: "string", description: "Optional specific trade pain / notes for copy" },
+          kitKey: { type: "string", description: "Optional explicit kit key override" },
+          accent: { type: "string", description: "Optional hex accent color override" },
+          dryRun: { type: "boolean", description: "If true, write files only and do not deploy. Default false." },
+        },
+        required: ["businessName", "phone", "industry", "city", "state"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "trigger_vercel_deploy",
       description: "Trigger a Vercel deployment for the current project via its deploy hook.",
       parameters: { type: "object", properties: {} },
@@ -79,6 +111,21 @@ async function executeToolCall(toolCall) {
         return await runSql(args.sql);
       case "trigger_vercel_deploy":
         return await triggerVercelDeploy();
+      case "deploy_onejob_site": {
+        const result = await buildOne(
+          {
+            businessName: args.businessName,
+            phone: args.phone,
+            industry: args.industry,
+            city: args.city,
+            state: args.state,
+            notes: args.notes || '',
+          },
+          { kitKey: args.kitKey, accent: args.accent },
+          !!args.dryRun
+        );
+        return JSON.stringify(result);
+      }
       default:
         return `Unknown tool: ${name}`;
     }
@@ -184,10 +231,15 @@ export async function POST(req) {
     // returned as a plan for the user to approve/reject rather than being
     // executed immediately. Execution only happens once the client sends
     // decision: "approve" for that exact plan.
+    const withSystem =
+      messages[0]?.role === 'system'
+        ? messages
+        : [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
+
     console.log(`[agent] calling DeepSeek (turn ${turns + 1})...`);
     const response = await deepseek.chat.completions.create({
       model: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-      messages,
+      messages: withSystem,
       tools,
       tool_choice: "auto",
     });

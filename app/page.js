@@ -2,10 +2,78 @@
 import { useEffect, useRef, useState } from 'react';
 import { parseLeadsCsv, parseLeadsJson } from '@/lib/csv';
 
-const TABS = ['Leads', 'Kits', 'Hero Library', 'Results'];
+const STORAGE_KEY = 'ai-agent-session-v1';
+const MAX_HISTORY = 200;
+
+function loadStoredState() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredState(state) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // localStorage unavailable (private browsing, quota, etc.) — history just won't persist
+  }
+}
+
+function HistoryEntry({ entry }) {
+  const time = new Date(entry.ts).toLocaleTimeString();
+
+  if (entry.type === 'user') {
+    return (
+      <div className="text-sm">
+        <span className="text-gray-400">{time}</span>{' '}
+        <span className="font-semibold">You:</span> {entry.text}
+      </div>
+    );
+  }
+  if (entry.type === 'plan') {
+    return (
+      <div className="text-sm">
+        <span className="text-gray-400">{time}</span>{' '}
+        <span className="font-semibold text-amber-700">Proposed:</span>{' '}
+        {entry.items.map((item) => item.name).join(', ')}
+        {entry.note && <div className="text-gray-600 mt-0.5">{entry.note}</div>}
+      </div>
+    );
+  }
+  if (entry.type === 'decision') {
+    return (
+      <div className="text-sm">
+        <span className="text-gray-400">{time}</span>{' '}
+        <span className={entry.decision === 'approve' ? 'text-green-700 font-semibold' : 'text-red-700 font-semibold'}>
+          {entry.decision === 'approve' ? 'Approved' : 'Rejected'}
+        </span>
+      </div>
+    );
+  }
+  if (entry.type === 'error') {
+    return (
+      <div className="text-sm">
+        <span className="text-gray-400">{time}</span>{' '}
+        <span className="font-semibold text-red-600">Error:</span> {entry.text}
+      </div>
+    );
+  }
+  return (
+    <div className="text-sm">
+      <span className="text-gray-400">{time}</span>{' '}
+      <span className="font-semibold text-blue-700">Agent:</span> {entry.text}
+    </div>
+  );
+}
+
+
+const TABS = ['DeepSeek', 'Leads', 'Kits', 'Hero Library', 'Results'];
 
 export default function Home() {
-  const [tab, setTab] = useState('Leads');
+  const [tab, setTab] = useState('DeepSeek');
   const [leads, setLeads] = useState([]);
   const [pasteText, setPasteText] = useState('');
   const [parseError, setParseError] = useState('');
@@ -19,6 +87,109 @@ export default function Home() {
   const [heroUploadMsg, setHeroUploadMsg] = useState('');
   const fileInputRef = useRef(null);
   const heroFileInputRef = useRef(null);
+
+  // DeepSeek chat → deploy
+  const [prompt, setPrompt] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [response, setResponse] = useState('');
+  const [error, setError] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatTurns, setChatTurns] = useState(0);
+  const [plan, setPlan] = useState(null);
+  const [history, setHistory] = useState([]);
+  const loadedRef = useRef(false);
+  const inFlightRef = useRef(false);
+
+  useEffect(() => {
+    const saved = loadStoredState();
+    if (saved) {
+      setHistory(saved.history || []);
+      setChatMessages(saved.chatMessages || []);
+      setChatTurns(saved.chatTurns || 0);
+      setPlan(saved.plan || null);
+    }
+    loadedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    saveStoredState({ history, chatMessages, chatTurns, plan });
+  }, [history, chatMessages, chatTurns, plan]);
+
+  const logEvent = (entry) => {
+    setHistory((prev) => [...prev, { ...entry, ts: Date.now() }].slice(-MAX_HISTORY));
+  };
+
+  const callAgent = async (body) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message = data?.error || `Request failed with status ${res.status}.`;
+        setError(message);
+        logEvent({ type: 'error', text: message });
+        setPlan(null);
+        if (Array.isArray(data?.messages)) setChatMessages(data.messages);
+        return;
+      }
+      if (data.status === 'plan') {
+        setChatMessages(data.messages);
+        setChatTurns(data.turns);
+        setPlan({ items: data.plan, note: data.note });
+        logEvent({ type: 'plan', items: data.plan, note: data.note });
+      } else {
+        const reply = data.reply ?? '(no reply)';
+        setChatMessages(data.messages);
+        setChatTurns(0);
+        setResponse(reply);
+        setPlan(null);
+        logEvent({ type: 'reply', text: reply });
+      }
+    } catch (err) {
+      const message = `Network error: ${err.message}`;
+      setError(message);
+      logEvent({ type: 'error', text: message });
+      setPlan(null);
+    } finally {
+      inFlightRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const runAgent = () => {
+    if (!prompt.trim() || inFlightRef.current) return;
+    setResponse('');
+    setError('');
+    setPlan(null);
+    logEvent({ type: 'user', text: prompt });
+    callAgent({ messages: chatMessages, message: prompt });
+    setPrompt('');
+  };
+
+  const respondToPlan = (decision) => {
+    if (!plan || inFlightRef.current) return;
+    logEvent({ type: 'decision', decision });
+    callAgent({ messages: chatMessages, turns: chatTurns, decision });
+  };
+
+  const clearHistory = () => {
+    setHistory([]);
+    setChatMessages([]);
+    setChatTurns(0);
+    setPlan(null);
+    setResponse('');
+    setError('');
+    try { window.localStorage.removeItem(STORAGE_KEY); } catch {}
+  };
+
 
   const refreshKits = async () => {
     try {
@@ -125,7 +296,7 @@ export default function Home() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">OneJob Site Factory</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Paste trade leads → tap-to-call one-pagers, deployed on Vercel, ready to text.
+          Chat with DeepSeek to deploy a one-pager, or batch leads on the Leads tab.
         </p>
       </div>
 
@@ -142,6 +313,71 @@ export default function Home() {
           </button>
         ))}
       </div>
+
+
+      {tab === 'DeepSeek' && (
+        <section className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-gray-500">
+              Tell DeepSeek the business, phone, trade, and city. It proposes a deploy — you approve — then you get the live URL.
+            </p>
+            {history.length > 0 && (
+              <button onClick={clearHistory} className="text-sm text-gray-500 hover:text-red-600 whitespace-nowrap">
+                New chat
+              </button>
+            )}
+          </div>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="w-full h-32 border rounded p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+            placeholder="e.g. Deploy a one-pager for Colony Plumbing, (251) 555-0142, plumber in Mobile, AL — kitchen sink backs up every Friday."
+            disabled={!!plan}
+          />
+          <button
+            onClick={runAgent}
+            disabled={loading || !prompt.trim() || !!plan}
+            className="bg-blue-500 disabled:bg-blue-300 text-white px-4 py-2 rounded hover:bg-blue-600"
+          >
+            {loading ? 'Running...' : 'Go'}
+          </button>
+          {loading && (
+            <p className="text-sm text-gray-500">Waiting on DeepSeek — this can take up to about a minute.</p>
+          )}
+          {plan && (
+            <div className="border border-amber-300 bg-amber-50 rounded p-4">
+              <h2 className="font-semibold mb-2">Proposed action{plan.items.length > 1 ? 's' : ''} — approval required</h2>
+              {plan.note && <p className="mb-3 text-sm text-gray-700 whitespace-pre-wrap">{plan.note}</p>}
+              <ul className="space-y-2 mb-4">
+                {plan.items.map((item, i) => (
+                  <li key={i} className="bg-white border rounded p-2">
+                    <div className="font-mono text-sm font-semibold">{item.name}</div>
+                    {Object.keys(item.args || {}).length > 0 && (
+                      <pre className="text-xs mt-1 whitespace-pre-wrap break-words">{JSON.stringify(item.args, null, 2)}</pre>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-2">
+                <button onClick={() => respondToPlan('approve')} disabled={loading} className="bg-green-600 disabled:bg-green-300 text-white px-4 py-2 rounded">Approve</button>
+                <button onClick={() => respondToPlan('reject')} disabled={loading} className="bg-red-600 disabled:bg-red-300 text-white px-4 py-2 rounded">Reject</button>
+              </div>
+            </div>
+          )}
+          {error && <pre className="bg-red-50 text-red-700 border border-red-200 rounded p-4 whitespace-pre-wrap">{error}</pre>}
+          {response && <pre className="bg-gray-100 rounded p-4 whitespace-pre-wrap">{response}</pre>}
+          {history.length > 0 && (
+            <div>
+              <h2 className="font-semibold mb-2 text-sm text-gray-500 uppercase tracking-wide">History</h2>
+              <div className="space-y-2 max-h-96 overflow-y-auto border rounded p-3 bg-white">
+                {history.map((entry, i) => (
+                  <HistoryEntry key={i} entry={entry} />
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {tab === 'Leads' && (
         <section className="space-y-5">
