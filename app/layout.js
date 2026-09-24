@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'AI Coding Agent',
-  description: 'AI Coding Agent interface',
+  title: 'OneJob Site Factory',
+  description: 'Paste trade leads, get deployed tap-to-call one-pagers.',
 };
 
 export default function RootLayout({ children }) {

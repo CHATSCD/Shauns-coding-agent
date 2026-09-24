@@ -1,49 +1,76 @@
-# Beacon
+# OneJob Site Factory
 
-> Privacy-first family safety & location sharing — smarter safety, longer battery, absolute privacy.
+Paste trade leads in, get deployed tap-to-call one-pagers out — built on the
+locked design from [em-thomas-electric.vercel.app](https://em-thomas-electric.vercel.app).
 
-Beacon replaces battery-heavy, privacy-invasive family tracking apps. This repository is the **backend foundation**:
+## What it does
 
-- **Option 2 — Data layer**: PostgreSQL + PostGIS schema with spatial GIST indexes, Row-Level Security (RLS), and automated retention (free = 2 days, premium = 30 days of history).
-- **Option 3 — API ingress**: `POST /v1/telemetry/ingest` telemetry endpoint + WebSocket `ws://…/v1/circles/{circle_id}` real-time event router.
-- **Client**: modular Flutter app scaffold (structure + placeholders) in [`client/`](client/).
+1. **Leads** tab — paste CSV/JSON or upload a file (`businessName, phone, industry, city, state, notes`).
+   Industry is auto-detected per row (override per-row if needed), along with hero image and accent color.
+2. **Build & deploy** — for each lead: pick industry kit → pick hero image → fill the locked
+   `master-template/index.html` → deploy as its own static Vercel project on team `shauns`
+   (or write to `out/<slug>/` in dry-run mode, no deploy).
+3. **Results** tab — live URL + a paste-ready first-text pitch per business.
+4. **Hero Library** tab — upload a photo for any industry any time; it's auto-cropped to
+   800×450 webp and committed to the repo under `hero-library/by-industry/<industry>/`.
+5. **Kits** tab — shows the configured trades (electrical, locksmith, plumbing, HVAC, handyman)
+   and how many hero images each has.
 
-## Repository layout
+## Env vars
 
+| Var | Used for |
+|---|---|
+| `DEEPSEEK_API_KEY` | the legacy chat-agent tab's model calls (`/api/agent`) |
+| `GITHUB_TOKEN` | pushing hero images and any agent-driven file changes |
+| `GITHUB_REPO_OWNER` / `GITHUB_REPO_NAME` | default repo for the above |
+| `VERCEL_TOKEN` | deploying manufactured one-pagers via the Vercel API |
+| `VERCEL_TEAM_ID` | `team_XGXRFTIEoPmeMRxkVd1H4oA4` (team `shauns`) |
+| `VERCEL_DEPLOY_HOOK` | redeploying *this* app itself (legacy chat-agent tool) |
+
+## Add a new trade kit
+
+Open `lib/kits.js` and append one object to the `KITS` array:
+
+```js
+{
+  key: 'roofing',
+  match: ['roof', 'roofing', 'shingle'],
+  industryLabel: 'Roofer',
+  accent: '#FFD000',
+  tagline: 'Leaks patched before the next storm.',
+  painSeeds: ['Roof leaking? Stop it before the ceiling does.', '...'],
+  services: ['Leak repair', 'Storm damage', 'Re-roofs', 'Inspections'],
+  whyPoints: ['...', '...', '...'],
+}
 ```
-.
-├── backend/                 # Go API gateway / WebSocket server
-│   ├── cmd/server/          # entrypoint
-│   ├── internal/
-│   │   ├── auth/            # Supabase HS256 JWT middleware
-│   │   ├── config/          # env config
-│   │   ├── db/              # pgx pool + migrations
-│   │   ├── handlers/        # ingest + websocket handlers
-│   │   ├── hub/             # per-circle publish/subscribe hub
-│   │   └── models/          # request/event types
-│   └── migrations/          # SQL schema (mirror of provisioned DB)
-├── client/                  # modular Flutter application (scaffold)
-├── docs/
-│   ├── api.md               # API contracts
-│   └── data-model.md        # data layer reference
-└── docker-compose.yml       # local PostGIS for offline dev
-```
 
-## Status
+Nothing else needs to change — industry auto-detect, the hero picker, and the build pipeline
+all read from this list. Make a matching folder under `hero-library/by-industry/roofing/`
+(a `.gitkeep` is enough until you upload a real hero).
 
-- [x] Data layer provisioned (Supabase: PostGIS, GIST indexes, RLS, retention trigger)
-- [x] Repository scaffold (Go backend + Flutter client directories)
-- [x] `POST /v1/telemetry/ingest` (Go handler)
-- [x] WebSocket `v1/circles/{circle_id}` (Go handler + in-process hub)
-- [ ] Wire real Redis pub/sub for multi-instance broadcast
-- [ ] Kafka telemetry pipeline + PostGIS analytics
-- [ ] Emergency dispatch bridge (24/7, premium)
+## Add heroes
 
-## Quickstart (backend)
+Use the **Hero Library** tab in the app (uploads, auto-crops to 800×450 webp, commits to
+`hero-library/by-industry/<industry>/`), or drop a pre-cropped `.webp` file into that folder
+directly and push it.
 
-See [`backend/README.md`](backend/README.md).
+## Run a batch
 
-## Docs
+1. Leads tab → paste or upload leads.
+2. Leave **Dry run** checked to just write filled sites to `out/<slug>/` locally with no deploy —
+   good for reviewing copy/hero/accent before spending real Vercel projects.
+3. Uncheck it and hit **Build & Deploy** to publish each site live on team `shauns` and get URLs
+   + pitch text back in the Results tab.
 
-- [API contracts](docs/api.md)
-- [Data model](docs/data-model.md)
+## Locked design
+
+`master-template/index.html` is the one true one-pager layout (sticky call bar, `hero.webp` at
+800×450 `object-fit: cover`, Oswald + DM Sans, dark background, default accent `#FFD000`). Don't
+redesign it — extend `lib/kits.js` and the hero library instead. Every deploy is static HTML only
+(`framework: null`), on Vercel, never anywhere else.
+
+## Legacy chat agent
+
+The original free-form "AI Coding Agent" tab logic still lives at `/api/agent` (DeepSeek + GitHub/Supabase/Vercel
+tool calls with an approve/reject plan step) — it's no longer surfaced in the UI but the route still
+works if you want to script against it directly.
