@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { buildOne, listKitsSummary } from '@/lib/buildSite';
 
+// deployStaticSite may poll up to ~60s per lead for the public alias.
+export const maxDuration = 120;
+
 export async function POST(req) {
   const body = await req.json().catch(() => null);
   if (!body || !Array.isArray(body.leads) || !body.leads.length) {

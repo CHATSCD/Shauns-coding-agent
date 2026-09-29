@@ -386,7 +386,7 @@ export default function Home() {
             <textarea
               value={pasteText}
               onChange={(e) => setPasteText(e.target.value)}
-              placeholder={`businessName,phone,industry,city,state,notes\nEM Thomas Electric,(251) 456-0956,electrical,Mobile,AL,panel smells hot`}
+              placeholder={`businessName,phone,industry,city,state,notes,owner (optional)\nEM Thomas Electric,(251) 456-0956,electrical,Mobile,AL,panel smells hot,Eddie Thomas`}
               className="w-full h-28 border rounded p-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <div className="flex items-center gap-3 mt-2">

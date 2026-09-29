@@ -80,6 +80,7 @@ const tools = [
           city: { type: "string" },
           state: { type: "string", description: "Two-letter state, e.g. AL" },
           notes: { type: "string", description: "Optional specific trade pain / notes for copy" },
+          ownerName: { type: "string", description: "Optional owner name (first name is used to greet them in the pitch)" },
           kitKey: { type: "string", description: "Optional explicit kit key override" },
           accent: { type: "string", description: "Optional hex accent color override" },
           dryRun: { type: "boolean", description: "If true, write files only and do not deploy. Default false." },
@@ -120,6 +121,7 @@ async function executeToolCall(toolCall) {
             city: args.city,
             state: args.state,
             notes: args.notes || '',
+            ownerName: args.ownerName || '',
           },
           { kitKey: args.kitKey, accent: args.accent },
           !!args.dryRun
